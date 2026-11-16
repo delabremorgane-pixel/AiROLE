@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Roleplay</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #0f1117; color: #e6e6e6; height: 100vh; display: flex; }
+  #sidebar { width: 280px; background: #161a23; padding: 16px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+  #sidebar h1 { font-size: 18px; margin-bottom: 4px; }
+  .btn { background: #4f6df5; color: #fff; border: none; padding: 10px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+  .btn:hover { background: #3d5ae0; }
+  .btn.secondary { background: #2a2f3d; }
+  .btn.danger { background: #b33939; }
+  .list-item { padding: 10px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+  .list-item:hover { background: #232839; }
+  .list-item.active { background: #2f3650; }
+  .section-title { font-size: 12px; text-transform: uppercase; color: #8b93a7; margin-top: 8px; }
+  #main { flex: 1; display: flex; flex-direction: column; }
+  #chat-header { padding: 14px 20px; background: #161a23; font-weight: 600; border-bottom: 1px solid #232839; display: flex; justify-content: space-between; align-items: center; }
+  #messages { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 12px; }
+  .msg { max-width: 75%; padding: 10px 14px; border-radius: 12px; white-space: pre-wrap; line-height: 1.45; }
+  .msg.user { align-self: flex-end; background: #4f6df5; color: #fff; }
+  .msg.assistant { align-self: flex-start; background: #232839; }
+  #input-bar { display: flex; gap: 10px; padding: 14px 20px; background: #161a23; }
+  #msg-input { flex: 1; background: #0f1117; color: #e6e6e6; border: 1px solid #2a2f3d; border-radius: 8px; padding: 10px 12px; font-size: 14px; resize: none; }
+  #empty-state { flex: 1; display: flex; align-items: center; justify-content: center; color: #8b93a7; }
+  dialog { background: #161a23; color: #e6e6e6; border: 1px solid #2a2f3d; border-radius: 12px; padding: 24px; width: 420px; }
+  dialog::backdrop { background: rgba(0,0,0,.6); }
+  dialog form { display: flex; flex-direction: column; gap: 10px; }
+  dialog input, dialog textarea { background: #0f1117; color: #e6e6e6; border: 1px solid #2a2f3d; border-radius: 8px; padding: 8px; font-size: 14px; }
+  dialog textarea { min-height: 80px; resize: vertical; }
+  .char-desc { font-size: 12px; color: #8b93a7; margin-top: 2px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+  <aside id="sidebar">
+    <h1>🎭 AI Roleplay</h1>
+    <button class="btn" onclick="openCharDialog()">+ Nouveau personnage</button>
+    <div class="section-title">Personnages</div>
+    <div id="char-list"></div>
+    <div class="section-title">Conversations</div>
+    <button class="btn secondary" onclick="newChat()">+ Nouvelle conversation</button>
+    <div id="chat-list"></div>
+  </aside>
+
+  <main id="main">
+    <div id="chat-header"><span id="chat-title">Sélectionne ou crée une conversation</span><span id="chat-actions"></span></div>
+    <div id="empty-state">Choisis un personnage et démarre ton roleplay ✨</div>
+    <div id="messages" class="hidden"></div>
+    <div id="input-bar" class="hidden">
+      <textarea id="msg-input" rows="1" placeholder="Écris ton message... (Entrée pour envoyer)"></textarea>
+      <button class="btn" onclick="sendMessage()">Envoyer</button>
+    </div>
+  </main>
+
+  <dialog id="char-dialog">
+    <form onsubmit="saveCharacter(event)">
+      <h2 id="dialog-title" style="margin-bottom:8px;">Nouveau personnage</h2>
+      <input id="char-name" placeholder="Nom du personnage" required>
+      <input id="char-desc" placeholder="Courte description (optionnel)">
+      <textarea id="char-prompt" placeholder="Prompt système : personnalité, univers, style de jeu..." required></textarea>
+      <div style="display:flex; gap:10px;">
+        <button type="submit" class="btn">Enregistrer</button>
+        <button type="button" class="btn secondary" onclick="document.getElementById('char-dialog').close()">Annuler</button>
+      </div>
+    </form>
+  </dialog>
+
+<script>
+let characters = [], chats = [], currentChat = null, editingCharId = null;
+
+const $ = id => document.getElementById(id);
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+  return res.json();
+}
+
+async function loadAll() {
+  characters = await api('/api/characters');
+  chats = await api('/api/chats');
+  renderChars(); renderChats();
+}
+
+function renderChars() {
+  $('char-list').innerHTML = characters.map(c =>
+    `<div class="list-item" onclick="startChatWith('${c.id}')">
+       <div>${c.name}</div>${c.description ? `<div class="char-desc">${c.description}</div>` : ''}
+     </div>`).join('') || '<div class="char-desc">Aucun personnage</div>';
+}
+
+function renderChats() {
+  $('chat-list').innerHTML = chats.map(c => {
+    const char = characters.find(x => x.id === c.character_id);
+    return `<div class="list-item ${currentChat?.id === c.id ? 'active' : ''}" onclick="openChat('${c.id}')">${char ? char.name : '?'} — ${c.title}</div>`;
+  }).join('') || '<div class="char-desc">Aucune conversation</div>';
+}
+
+function openCharDialog(id) {
+  editingCharId = id || null;
+  const c = id ? characters.find(x => x.id === id) : null;
+  $('dialog-title').textContent = id ? 'Modifier le personnage' : 'Nouveau personnage';
+  $('char-name').value = c?.name || '';
+  $('char-desc').value = c?.description || '';
+  $('char-prompt').value = c?.system_prompt || '';
+  $('char-dialog').showModal();
+}
+
+async function saveCharacter(e) {
+  e.preventDefault();
+  const body = JSON.stringify({
+    name: $('char-name').value,
+    description: $('char-desc').value,
+    system_prompt: $('char-prompt').value,
+  });
+  if (editingCharId) await api(`/api/characters/${editingCharId}`, {method: 'PUT', body, headers: {'Content-Type': 'application/json'}});
+  else await api('/api/characters', {method: 'POST', body, headers: {'Content-Type': 'application/json'}});
+  $('char-dialog').close();
+  await loadAll();
+}
+
+async function startChatWith(charId) {
+  const chat = await api(`/api/chats?character_id=${charId}`, {method: 'POST'});
+  await loadAll();
+  openChat(chat.id);
+}
+
+async function newChat() {
+  if (!characters.length) return alert('Crée d\'abord un personnage.');
+  const names = characters.map(c => `${c.id}:${c.name}`).join('\n');
+  const id = prompt(`Quel personnage ? (id:nom)\n${names}`)?.split(':')[0];
+  if (id) startChatWith(id);
+}
+
+async function openChat(id) {
+  currentChat = await api(`/api/chats/${id}`);
+  const char = characters.find(c => c.id === currentChat.character_id);
+  $('chat-title').textContent = currentChat.title;
+  $('chat-actions').innerHTML = `<button class="btn danger" onclick="deleteChat('${id}')">Supprimer</button>`;
+  $('empty-state').classList.add('hidden');
+  $('messages').classList.remove('hidden');
+  $('input-bar').classList.remove('hidden');
+  renderMessages();
+  renderChats();
+}
+
+function renderMessages() {
+  $('messages').innerHTML = currentChat.messages.map(m =>
+    `<div class="msg ${m.role}">${m.content.replace(/</g, '&lt;')}</div>`).join('');
+  $('messages').scrollTop = $('messages').scrollHeight;
+}
+
+async function deleteChat(id) {
+  await api(`/api/chats/${id}`, {method: 'DELETE'});
+  currentChat = null;
+  $('messages').classList.add('hidden');
+  $('input-bar').classList.add('hidden');
+  $('empty-state').classList.remove('hidden');
+  $('chat-title').textContent = 'Sélectionne ou crée une conversation';
+  $('chat-actions').innerHTML = '';
+  await loadAll();
+}
+
+async function sendMessage() {
+  const input = $('msg-input');
+  const content = input.value.trim();
+  if (!content || !currentChat) return;
+  input.value = '';
+  currentChat.messages.push({role: 'user', content});
+  renderMessages();
+  $('msg-input').placeholder = 'L\'IA écrit...';
+  try {
+    const {reply} = await api(`/api/chats/${currentChat.id}/messages`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({content}),
+    });
+    currentChat.messages.push({role: 'assistant', content: reply});
+  } catch (e) {
+    currentChat.messages.push({role: 'assistant', content: `⚠️ ${e.message}`});
+  }
+  $('msg-input').placeholder = 'Écris ton message... (Entrée pour envoyer)';
+  renderMessages();
+}
+
+$('msg-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+});
+
+loadAll();
+</script>
+</body>
+</html>
